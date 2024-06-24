@@ -1,0 +1,354 @@
+Pitanje 1: Koji je prosečan broj značajnih udaraca po borbi za sve borce koji imaju bar jednu borbu u prethodnih 10 godina?
+
+db.stats_optimized.aggregate([
+    {
+        $match: {
+            'fight_info.date': {
+                $gte: new Date(new Date().setFullYear(new Date().getFullYear() - 10))
+            }
+        }
+    },
+    {
+        $group: {
+            _id: '$fighter_name',
+            avg_sig_strikes_landed: {
+                $avg: '$sig_strikes_landed'
+            },
+        }
+    }
+])
+
+Pitanje 2: Koliko pobeda i ukupno borbi imaju borci sa barem jednom pobedom i koji im je odnos pobeda i poraza?
+
+db.fighters_optimized.aggregate([
+    {
+        $match: {
+            wins: {
+                $gt: 0
+            }
+        }
+    },
+    {
+        $addFields: {
+            "win/loss_ratio": {
+                $divide: ["$wins", "$total_fights"]
+            }
+        }
+    },
+    {
+        $project: {
+            fighter: 1,
+            wins: 1,
+            total_fights: 1,
+            'win/loss_ratio': 1
+        }
+    }
+])
+
+Pitanje 3: Koje je prosečno vreme trajanja (u sekundama) borbi koje je sudio Herb Dean?
+
+db.stats_optimized.aggregate([
+    {
+        $match: {
+            'fight_info.referee': 'Herb Dean'
+        }
+    },
+    {
+        $group: {
+            _id: '$fight_info.referee',
+            avg_ground_time: {
+                $avg: '$control'
+            }
+        }
+    }
+])
+
+Pitanje 4: Koji je odnos pobeda i poraza boraca koje je pobedio Khabib Nurmagomedov?
+
+db.fighters_optimized.aggregate([
+    {
+        $lookup: {
+            from: 'fights',
+            localField: 'fighter',
+            foreignField: 'fighter_name',
+            as: 'fights_info'
+        }
+    },
+    {
+        $match: {
+            'fights_info': {
+                $elemMatch: {
+                    result: 0,
+                    opponent_name: 'khabib nurmagomedov'
+                }
+            }
+        }
+    },
+    {
+        $addFields: {
+            "win/loss_ratio": {
+                $divide: ["$wins", "$total_fights"]
+            }
+        }
+    },
+    {
+        $project: {
+            fighter: 1,
+            wins: 1,
+            total_fights: 1,
+            'win/loss_ratio': 1
+        }
+    }
+])
+
+Pitanje 5: Koji je prosečan broj pokušaja rušenja koje su borci imali u borbama u kojima su imali manji reach?
+
+db.stats_optimized.aggregate([
+    {
+        $match: {
+            reach_advantage: '0'
+        }
+    },
+    {
+        $group: {
+            _id: "$reach_advantage",
+            avg_takedowns_attampts: {
+                $avg: '$takedowns_attempts'
+            }
+        }
+    }
+])
+
+Pitanje 6: Koja su top 3 borca sa najvećim ukupnim borilačkim vremenom u poslednjih 5 godina u light heavyweight diviziji, i koliko je svako od njih ostvario pobeda za to vreme?
+
+db.fights.aggregate([
+ {
+    $match: {
+      division: 'Light Heavyweight',
+      date: { $gte: new Date(new Date().setFullYear(new Date().getFullYear() - 5)) }
+    }
+  },
+  {
+    $sort: {
+      fighter_name: 1, 
+      date: 1
+    }
+  },
+  {
+    $group: {
+      _id: '$fighter_name',
+      latest_comp_time: { $last: '$total_comp_time' },
+      oldest_comp_time: { $first: '$total_comp_time' }
+    }
+  },
+  {
+    $addFields: {
+      comp_time_last_5_years: { $subtract: ['$latest_comp_time', '$oldest_comp_time'] }
+    }
+  },
+  {
+    $sort: {
+      comp_time_last_5_years: -1
+    }
+  },
+  {
+    $limit: 3
+  },
+  {
+    $lookup: {
+      from: 'fights',
+      let: { fighter_name: '$_id' },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: ['$fighter_name', '$$fighter_name'] },
+                { $eq: ['$result', 1] },
+                { $gte: ['$date', new Date(new Date().setFullYear(new Date().getFullYear() - 5))] }
+              ]
+            }
+          }
+        },
+        {
+          $count: 'win_count'
+        }
+      ],
+      as: 'win_count'
+    }
+  },
+  {
+    $unwind: {
+      path: '$win_count',
+      preserveNullAndEmptyArrays: true
+    }
+  },
+  {
+    $project: {
+      _id: 1,
+      comp_time_last_5_years: 1,
+      win_count: { $ifNull: ['$win_count.win_count', 0] }
+    }
+  }
+  ])
+
+Pitanje 7:  Koji borac u bantamweight diviziji ima najveći prosečni broj pokušaja značajnih udaraca po borbi, a da nije izgubio borbu preko jednoglasne odluke?
+
+db.getCollection("stats_optimized").aggregate([
+    {
+      $match: {
+        'fight_info.division': 'Bantamweight'
+      }
+    },
+    {
+      $group: {
+        _id: '$fighter_name',
+        avg_sig_strikes_attempts: { $avg: '$sig_strikes_attempts' },
+        u_dec_losses: {
+          $sum: {
+            $cond: [
+              { $and: [{ $eq: ['$fight_details.result', 0] }, { $eq: ['$fight_details.method', 'U-DEC'] }] },
+              1,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      $match: {
+        u_dec_losses: { $eq: 0 }
+      }
+    },
+    {
+      $sort: {
+        avg_sig_strikes_attempts: -1
+      }
+    },
+    {
+      $limit: 1
+    }
+  ])
+
+Pitanje 8: Koji borac sa ortodox stance-om ima najviše vremena kontrole po borbi, i koliki je njegov procenat uspešnosti u obaranju?
+
+db.getCollection("stats_optimized").aggregate([
+  {
+    $match: {
+      'fighter_info.stance': 'Orthodox'
+    }
+  },
+  {
+    $group: {
+      _id: '$fighter_name',
+      total_control_time: { $sum: '$control' },
+      fight_count: { $sum: 1 },
+      total_takedowns_landed: { $sum: '$takedowns_landed' },
+      total_takedowns_attempts: { $sum: '$takedowns_attempts' }
+    }
+  },
+  {
+    $project: {
+      average_control_time_per_fight: {
+        $divide: ['$total_control_time', '$fight_count']
+      },
+      takedown_accuracy: {
+        $cond: {
+          if: { $eq: ['$total_takedowns_attempts', 0] },
+          then: 0,
+          else: {
+            $multiply: [
+              { $divide: ['$total_takedowns_landed', '$total_takedowns_attempts'] },
+              100
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    $sort: {
+      average_control_time_per_fight: -1
+    }
+  },
+  {
+    $limit: 1
+  }
+]);
+
+Pitanje 9: Izlistati sve informacije o borcima koji su se borili u makar 2 divizije, a tokom karijere imaju procenat realizacije leg strikova preko 60%.
+
+
+ db.getCollection("stats_optimized").aggregate([
+    {
+      $match: {
+        'number_of_divisions': { $gt: 1 },
+        $expr: {
+          $gt: [
+            {
+              $cond: {
+                if: { $eq: ['$leg_strikes_attempts', 0] },
+                then: 0,
+                else: { $divide: ['$leg_strikes_landed', '$leg_strikes_attempts'] }
+              }
+            },
+            0.6
+          ]
+        }
+      }
+    },
+    {
+      $lookup: {
+        from: 'fighters',
+        localField: 'fighter_name',
+        foreignField: 'fighter',
+        as: 'fighter_details'
+      }
+    },
+    {
+      $unwind: '$fighter_details'
+    },
+    {
+      $addFields: {
+        fighter_details: {
+          $mergeObjects: ['$fighter_details', { unique_divisions: '$number_of_divisions' }]
+        }
+      }
+    },
+    {
+      $replaceRoot: {
+        newRoot: '$fighter_details'
+      }
+    }
+  ]);
+
+Pitanje 10: Nađi sve borce koji imaju više od 45 godina, a imali su borbu za titulu u svojoj karijeri.
+
+db.getCollection("fighters_optimized").aggregate([
+  {
+    $addFields: {
+      age_now: {
+        $divide: [
+          { $subtract: [new Date(), "$dob"] },
+          1000 * 60 * 60 * 24 * 365
+        ]
+      }
+    }
+  },
+  {
+    $match: {
+      age_now: { $gt: 45 }
+    }
+  },
+  {
+    $match: {
+      "had_title_fight": true
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      fighter: 1
+    }
+  }
+]);

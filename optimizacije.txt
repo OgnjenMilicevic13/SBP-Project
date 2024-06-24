@@ -1,0 +1,216 @@
+Optimizacija sheme stats
+	- dodato polje fight_info
+		- date
+		- referee
+		- division
+		- result
+		- method
+	- dodato polje fighter_info
+		- stance
+sablon prosirene reference
+	- dodate polje reach_advantage
+	- dodatno polje leg_strikes_ratio
+	- dodatno polje number_of_divisions
+sablon proracunavanja
+
+var statsOptimized = db.getCollection('stats').aggregate([
+    {
+        $lookup: {
+            from: 'fights',
+            localField: 'fight_id',
+            foreignField: 'fight_id',
+            as: 'fight_info'
+        }
+    },
+    {
+        $unwind: '$fight_info'
+    },
+    {
+        $lookup: {
+            from: 'fighters',
+            localField: 'fighter_name',
+            foreignField: 'fighter',
+            as: 'fighter_info'
+        }
+    },
+    {
+        $lookup: {
+            from: 'fighters',
+            localField: 'opponent_name',
+            foreignField: 'fighter',
+            as: 'opponent_info'
+        }
+    },
+    {
+        $unwind: '$fighter_info'
+    },
+    {
+        $unwind: '$opponent_info'
+    },
+    {
+        $addFields: {
+            reach_advantage: {
+                $cond: {
+                    if: {
+                        $or: [
+                            { $eq: ["$fighter_info.reach", null] },
+                            { $eq: ["$opponent_info.reach", null] }
+                        ]
+                    },
+                    then: null,
+                    else: {
+                        $cond: {
+                            if: {
+                                $gt: [
+                                    "$fighter_info.reach",
+                                    "$opponent_info.reach"
+                                ]
+                            },
+                            then: 1,
+                            else: '0'
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        $project: {
+            _id: 0,
+            fight_info: {
+                _id: 0,
+                fight_id: 0,
+                fighter_name: 0,
+                opponent_name: 0,
+                total_comp_time: 0,
+                round: 0,
+                time: 0,
+                time_format: 0
+            },
+            fighter_info: {
+                _id: 0,
+                fighter: 0,
+                dob: 0,
+                height: 0,
+                reach: 0
+            }
+        }
+    }
+]).toArray();
+
+db.stats_optimized.insertMany(statsOptimized);
+
+Optimizacija sheme fighters:
+	- dodato polje wins
+	- dodato polje total_fights
+	- dodato polje had_title_fight
+sablon prosirene reference
+
+var fightersOptimized = db.fighters.aggregate([
+    {
+        $lookup: {
+            from: 'fights',
+            localField: 'fighter',
+            foreignField: 'fighter_name',
+            as: 'fights_info'
+        }
+    },
+    {
+        $lookup: {
+            from: 'stats_optimized',
+            localField: 'fighter',
+            foreignField: 'fighter_name',
+            as: 'stats_info'
+        }
+    },
+    {
+        $addFields: {
+            wins: {
+                $size: {
+                    $filter: {
+                        input: "$fights_info",
+                        as: "fight",
+                        cond: { $eq: ["$$fight.result", 1] }
+                    }
+                }
+            },
+            total_fights: {
+                $size: '$fights_info'
+            },
+            had_title_fight: {
+                $gt: [
+                    {
+                        $size: {
+                            $filter: {
+                                input: "$stats_info",
+                                as: "stat",
+                                cond: { $eq: ["$$stat.title_fight", 1] }
+                            }
+                        }
+                    },
+                    0
+                ]
+            }
+        }
+    },
+    {
+        $project: {
+            fights_info: 0,
+            stats_info: 0,
+            _id: 0
+        }
+    }
+]).toArray();
+
+db.fighters_optimized.insertMany(fightersOptimized);
+
+//dodavanje broja divizija u stats
+var uniqueDivisionsPipeline = [
+  {
+    $lookup: {
+      from: 'fights',
+      localField: 'fight_id',
+      foreignField: 'fight_id',
+      as: 'fight_details'
+    }
+  },
+  {
+    $unwind: '$fight_details'
+  },
+  {
+    $group: {
+      _id: '$fighter_name',
+      unique_divisions: { $addToSet: '$fight_details.division' }
+    }
+  },
+  {
+    $project: {
+      fighter_name: '$_id',
+      number_of_divisions: { $size: '$unique_divisions' },
+      _id: 0
+    }
+  }
+];
+
+var uniqueDivisionsResults = db.fights.aggregate(uniqueDivisionsPipeline).toArray();
+
+
+uniqueDivisionsResults.forEach(function(result) {
+  db.stats_optimized.updateMany(
+    { fighter_name: result.fighter_name },
+    { $set: { number_of_divisions: result.number_of_divisions } }
+  );
+});
+
+
+
+Indeksi:
+db.fights.createIndex({ fighter_name: 1 });
+db.stats_optimized.createIndex({ reach_advantage: 1 });
+db.stats_optimized.createIndex({ 'fight_info.date': 1 });
+db.stats_optimized.createIndex({ 'fight_info.referee': 1 });
+db.stats_optimized.createIndex({"fight_info.division":1});
+db.stats_optimized.createIndex({"fighter_info.stance":1});
+db.stats_optimized.createIndex({ fighter_name: 1 });
+
+//unapredjenje performansi -> https://github.com/alexadjukic/SBP-Project/blob/main/images/poredjenje%20performansi.png
